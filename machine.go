@@ -151,6 +151,13 @@ type Config struct {
 	// It is possible to use a valid IPv4 link-local address (169.254.0.0/16).
 	// If not provided, the default address (169.254.169.254) will be used.
 	MmdsAddress net.IP
+
+	// Configuration for snapshot loading
+	Snapshot SnapshotConfig
+}
+
+func (cfg *Config) hasSnapshot() bool {
+	return cfg.Snapshot.MemFilePath != "" || cfg.Snapshot.SnapshotPath != ""
 }
 
 // Validate will ensure that the required fields are set and that
@@ -381,7 +388,7 @@ func NewMachine(ctx context.Context, cfg Config, opts ...Opt) (*Machine, error) 
 // handlers succeed, then this will start the VMM instance.
 // Start may only be called once per Machine.  Subsequent calls will return
 // ErrAlreadyStarted.
-func (m *Machine) Start(ctx context.Context) error {
+func (m *Machine) Start(ctx context.Context, opts ...StartOpt) error {
 	m.logger.Debug("Called Machine.Start()")
 	alreadyStarted := true
 	m.startOnce.Do(func() {
@@ -401,6 +408,10 @@ func (m *Machine) Start(ctx context.Context) error {
 			}
 		}
 	}()
+
+	for _, opt := range opts {
+		opt(m)
+	}
 
 	err = m.Handlers.Run(ctx, m)
 	if err != nil {
@@ -731,6 +742,10 @@ func (m *Machine) captureFifoToFileWithChannel(ctx context.Context, logger *log.
 }
 
 func (m *Machine) createMachine(ctx context.Context) error {
+	if m.Cfg.hasSnapshot() {
+		return nil
+	}
+
 	resp, err := m.client.PutMachineConfiguration(ctx, &m.Cfg.MachineCfg)
 	if err != nil {
 		m.logger.Errorf("PutMachineConfiguration returned %s", resp.Error())
@@ -747,6 +762,10 @@ func (m *Machine) createMachine(ctx context.Context) error {
 }
 
 func (m *Machine) createBootSource(ctx context.Context, imagePath, initrdPath, kernelArgs string) error {
+	if m.Cfg.hasSnapshot() {
+		return nil
+	}
+
 	bsrc := models.BootSource{
 		KernelImagePath: &imagePath,
 		InitrdPath:      initrdPath,
@@ -826,6 +845,10 @@ func (m *Machine) UpdateGuestNetworkInterfaceRateLimit(ctx context.Context, ifac
 
 // attachDrive attaches a secondary block device
 func (m *Machine) attachDrive(ctx context.Context, dev models.Drive) error {
+	if m.Cfg.hasSnapshot() {
+		return nil
+	}
+
 	hostPath := StringValue(dev.PathOnHost)
 	m.logger.Infof("Attaching drive %s, slot %s, root %t.", hostPath, StringValue(dev.DriveID), BoolValue(dev.IsRootDevice))
 	respNoContent, err := m.client.PutGuestDriveByID(ctx, StringValue(dev.DriveID), &dev)
@@ -854,6 +877,10 @@ func (m *Machine) addVsock(ctx context.Context, dev VsockDevice) error {
 }
 
 func (m *Machine) startInstance(ctx context.Context) error {
+	if m.Cfg.hasSnapshot() {
+		return nil
+	}
+
 	action := models.InstanceActionInfoActionTypeInstanceStart
 	info := models.InstanceActionInfo{
 		ActionType: &action,
@@ -1102,6 +1129,21 @@ func (m *Machine) CreateSnapshot(ctx context.Context, memFilePath, snapshotPath 
 	}
 
 	m.logger.Debug("snapshot created successfully")
+	return nil
+}
+
+// loadSnapshot loads a snapshot of the VM
+func (m *Machine) loadSnapshot(ctx context.Context, memFilePath, snapshotPath string, opts ...LoadSnapshotOpt) error {
+	snapshotParams := &models.SnapshotLoadParams{
+		MemFilePath:  String(memFilePath),
+		SnapshotPath: String(snapshotPath),
+	}
+
+	if _, err := m.client.LoadSnapshot(ctx, snapshotParams, opts...); err != nil {
+		return fmt.Errorf("failed to load a snapshot for VM: %v", err)
+	}
+
+	m.logger.Debug("snapshot loaded successfully")
 	return nil
 }
 
