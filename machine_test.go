@@ -1728,6 +1728,111 @@ func TestCreateSnapshot(t *testing.T) {
 	}
 }
 
+func TestLoadSnapshot(t *testing.T) {
+	fctesting.RequiresKVM(t)
+	fctesting.RequiresRoot(t)
+
+	dir, err := ioutil.TempDir("", t.Name())
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	cases := []struct {
+		name           string
+		createSnapshot func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string)
+		loadSnapshot   func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string)
+	}{
+		{
+			name: "TestLoadSnapshot",
+			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				// Create a snapshot
+				cfg := createValidConfig(t, socketPath+".create")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				err = m.Start(ctx)
+				require.NoError(t, err)
+
+				err = m.PauseVM(ctx)
+				require.NoError(t, err)
+
+				err = m.CreateSnapshot(ctx, memPath, snapPath)
+				require.NoError(t, err)
+
+				err = m.StopVMM()
+				require.NoError(t, err)
+			},
+
+			loadSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				cfg := createValidConfig(t, socketPath+".load")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
+				require.NoError(t, err)
+
+				err = m.ResumeVM(ctx)
+				require.NoError(t, err)
+
+				err = m.StopVMM()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "TestLoadSnapshot without create",
+			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+
+			},
+
+			loadSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				cfg := createValidConfig(t, socketPath+".load")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
+				require.Error(t, err)
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Set snap and mem paths
+			socketPath := filepath.Join(dir, fsSafeTestName.Replace(t.Name()))
+			snapPath := socketPath + "SnapFile"
+			memPath := socketPath + "MemFile"
+			defer os.Remove(socketPath)
+			defer os.Remove(snapPath)
+			defer os.Remove(memPath)
+
+			// Tee logs for validation:
+			var logBuffer bytes.Buffer
+			machineLogger := logrus.New()
+			machineLogger.Out = io.MultiWriter(os.Stderr, &logBuffer)
+
+			c.createSnapshot(ctx, machineLogger, socketPath, snapPath, memPath)
+			c.loadSnapshot(ctx, machineLogger, socketPath, snapPath, memPath)
+		})
+	}
+
+}
+
 func testCreateBalloon(ctx context.Context, t *testing.T, m *Machine) {
 	if err := m.CreateBalloon(ctx, testBalloonMemory, testBalloonDeflateOnOom, testStatsPollingIntervals); err != nil {
 		t.Errorf("Create balloon device failed from testAttachBalloon: %s", err)

@@ -21,6 +21,7 @@ import (
 
 // Opt represents a functional option to help modify functionality of a Machine.
 type Opt func(*Machine)
+type StartOpt func(*Machine)
 
 // WithClient will use the client in place rather than the client constructed
 // during bootstrapping of the machine. This option is useful for mocking out
@@ -45,5 +46,17 @@ func WithLogger(logger *logrus.Entry) Opt {
 func WithProcessRunner(cmd *exec.Cmd) Opt {
 	return func(machine *Machine) {
 		machine.cmd = cmd
+	}
+}
+
+// WithSnapshot will allow for the machine to start using a given snapshot.
+func WithSnapshot(memFilePath, snapshotPath string, opts ...LoadSnapshotOpt) StartOpt {
+	return func(m *Machine) {
+		m.Cfg.Snapshot.MemFilePath = memFilePath
+		m.Cfg.Snapshot.SnapshotPath = snapshotPath
+		m.Cfg.Snapshot.Opts = opts
+
+		m.Handlers.FcInit = m.Handlers.FcInit.AppendAfter("fcinit.StartVMM",
+			NewLoadSnapshotHandler(memFilePath, snapshotPath, opts...))
 	}
 }
