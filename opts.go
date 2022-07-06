@@ -60,3 +60,10 @@ func WithSnapshot(memFilePath, snapshotPath string, opts ...LoadSnapshotOpt) Sta
 			NewLoadSnapshotHandler(memFilePath, snapshotPath, opts...))
 	}
 }
+
+// WithSnapshot will allow for the machine to start using a given snapshot.
+func WithRootFs() StartOpt {
+	return func(m *Machine) {
+		return
+	}
+}

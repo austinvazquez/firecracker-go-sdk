@@ -35,6 +35,8 @@ release_url=https://github.com/firecracker-microvm/firecracker/releases/download
 testdata_objects = \
 $(FC_TEST_DATA_PATH)/vmlinux \
 $(FC_TEST_DATA_PATH)/root-drive.img \
+$(FC_TEST_DATA_PATH)/root-drive-with-ssh.img \
+$(FC_TEST_DATA_PATH)/root-drive-ssh-key \
 $(FC_TEST_DATA_PATH)/jailer \
 $(FC_TEST_DATA_PATH)/firecracker \
 $(FC_TEST_DATA_PATH)/ltag
@@ -80,6 +82,12 @@ $(FC_TEST_DATA_PATH)/fc.stamp:
 
 $(FC_TEST_DATA_PATH)/root-drive.img:
 	$(curl) -o $@ https://s3.amazonaws.com/spec.ccfc.min/img/hello/fsfiles/hello-rootfs.ext4
+$(FC_TEST_DATA_PATH)/root-drive-with-ssh.img: $(FIRECRACKER_DIR)
+	$(FIRECRACKER_DIR)/tools/devtool build_rootfs
+	cp $(FIRECRACKER_DIR)/build/rootfs/bionic.rootfs.ext4 $@
+
+$(FC_TEST_DATA_PATH)/root-drive-ssh-key: $(FC_TEST_DATA_PATH)/root-drive-with-ssh.img
+	sudo cp $(FIRECRACKER_DIR)/build/rootfs/ssh/id_rsa $@
 
 $(FC_TEST_DATA_PATH)/ltag:
 	GO111MODULE=off GOBIN=$(abspath $(FC_TEST_DATA_PATH)) \

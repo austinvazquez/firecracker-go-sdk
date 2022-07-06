@@ -36,6 +36,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	models "github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	ops "github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
@@ -1728,6 +1730,51 @@ func TestCreateSnapshot(t *testing.T) {
 	}
 }
 
+func connectToVM(m *Machine) (*ssh.Client, error) {
+	// Have to include another import which is annoying and possibly not a good idea?
+	knownHostsPath := ""
+	// TODO: Fill this out, figure out how to automatically
+	// add local machine as known host? Maybe like
+	// Make a knownhosts.New() and point to some
+	// dummy knownhosts thing in testdata
+	// basically do this lol
+	// https://stackoverflow.com/questions/45441735/ssh-handshake-complains-about-missing-host-key
+	hostKeyCallback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+
+	path, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	path += "/testdata/root-drive-ssh-key"
+
+	key, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	config := &ssh.ClientConfig{
+		User: "root",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: hostKeyCallback,
+	}
+
+	// TODO: Get the IP properly lol
+	ip := m.Cfg.NetworkInterfaces[0].StaticConfiguration.IPConfiguration.IPAddr.String()
+	port := "22"
+
+	return ssh.Dial("tcp", ip+":"+port, config)
+}
+
 func TestLoadSnapshot(t *testing.T) {
 	fctesting.RequiresKVM(t)
 	fctesting.RequiresRoot(t)
@@ -1805,6 +1852,78 @@ func TestLoadSnapshot(t *testing.T) {
 
 				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
 				require.Error(t, err)
+			},
+		},
+		{
+			name: "TestLoadSnapshot and check contents (via ssh)",
+			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				// Create a snapshot
+				cfg := createValidConfig(t, socketPath+".create")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				// TODO: Modify start
+				err = m.Start(ctx)
+				require.NoError(t, err)
+
+				client, err := connectToVM(m)
+				require.NoError(t, err)
+				defer client.Close()
+
+				session, err := client.NewSession()
+				require.NoError(t, err)
+				defer session.Close()
+
+				err = session.Start(`sleep 422`) // Should be asynchronous
+				require.NoError(t, err)
+
+				err = m.PauseVM(ctx)
+				require.NoError(t, err)
+
+				err = m.CreateSnapshot(ctx, memPath, snapPath)
+				require.NoError(t, err)
+
+				err = m.StopVMM()
+				require.NoError(t, err)
+			},
+
+			loadSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				cfg := createValidConfig(t, socketPath+".load")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
+				require.NoError(t, err)
+
+				err = m.ResumeVM(ctx)
+				require.NoError(t, err)
+
+				client, err := connectToVM(m)
+				require.NoError(t, err)
+				defer client.Close()
+
+				session, err := client.NewSession()
+				require.NoError(t, err)
+				defer session.Close()
+
+				var b bytes.Buffer
+				session.Stdout = &b
+				err = session.Run(`ps -aux | grep "sleep 422" | wc -l`)
+				require.NoError(t, err)
+				require.Equal(t, "2", b.String())
+
+				err = m.StopVMM()
+				require.NoError(t, err)
 			},
 		},
 	}
