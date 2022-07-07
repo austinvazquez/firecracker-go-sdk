@@ -1482,7 +1482,7 @@ func withRootDrive(rootfs string) MachineConfigOpt {
 				drives = append(drives, models.Drive{
 					DriveID:      String("root"),
 					IsRootDevice: Bool(true),
-					IsReadOnly:   Bool(true),
+					IsReadOnly:   Bool(false),
 					PathOnHost:   String(rootfs),
 				})
 				inserted = true
@@ -1495,7 +1495,7 @@ func withRootDrive(rootfs string) MachineConfigOpt {
 			drives = append(drives, models.Drive{
 				DriveID:      String("root"),
 				IsRootDevice: Bool(true),
-				IsReadOnly:   Bool(true),
+				IsReadOnly:   Bool(false),
 				PathOnHost:   String(rootfs),
 			})
 		}
@@ -1821,8 +1821,8 @@ func TestCreateSnapshot(t *testing.T) {
 	}
 }
 
-func connectToVM(m *Machine) (*ssh.Client, error) {
-	key, err := ioutil.ReadFile(testSSHKey)
+func connectToVM(m *Machine, sshKeyPath string) (*ssh.Client, error) {
+	key, err := ioutil.ReadFile(sshKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1857,10 +1857,9 @@ func writeCNIConf(path, networkName string) error {
 		"plugins": [
 		  {
 			"type": "ptp",
-			"ipMasq": true,
 			"ipam": {
 			  "type": "host-local",
-			  "subnet": "192.168.1.0/24"
+			  "subnet": "10.168.0.0/16"
 			}
 		  },
 		  {
@@ -1878,31 +1877,46 @@ func TestLoadSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
+	cniConfDir := filepath.Join(dir, "cni.conf")
+	err = os.MkdirAll(cniConfDir, 0777)
+	require.NoError(t, err)
+
+	rootfsBytes, err := ioutil.ReadFile(testRootfsWithSSH)
+	require.NoError(t, err)
+	rootfsPath := filepath.Join(dir, "rootfs.img")
+	err = ioutil.WriteFile(rootfsPath, rootfsBytes, 0666)
+	require.NoError(t, err)
+
+	sshKeyBytes, err := ioutil.ReadFile(testSSHKey)
+	require.NoError(t, err)
+	sshKeyPath := filepath.Join(dir, "id_rsa")
+	err = ioutil.WriteFile(sshKeyPath, sshKeyBytes, 0600)
+	require.NoError(t, err)
+
+	const networkName = "fcnet"
+	const ifName = "veth0"
+	networkInterface := NetworkInterface{
+		CNIConfiguration: &CNIConfiguration{
+			NetworkName: networkName,
+			IfName:      ifName,
+			ConfDir:     cniConfDir,
+			VMIfName:    "eth0",
+		},
+	}
+
+	err = writeCNIConf(fmt.Sprintf("%s/%s.conflist", cniConfDir, networkName), networkName)
+	require.NoError(t, err)
+
 	cases := []struct {
 		name           string
 		createSnapshot func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string)
 		loadSnapshot   func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string)
 	}{
 		{
-			name: "TestLoadSnapshot and check contents (via ssh)",
+			name: "TestLoadSnapshot",
 			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
-				networkName := "fcnet"
-				networkInterface := NetworkInterface{
-					CNIConfiguration: &CNIConfiguration{
-						NetworkName: networkName,
-						IfName:      "veth0",
-						ConfDir:     dir,
-					},
-				}
-
-				err = writeCNIConf(fmt.Sprintf("%s/%s.conflist", dir, networkName), networkName)
-				require.NoError(t, err)
-
-				cfg := createValidConfig(t, socketPath+".create",
-					withRootDrive(testRootfsWithSSH),
-					withNetworkInterface(networkInterface),
-				)
-
+				// Create a snapshot
+				cfg := createValidConfig(t, socketPath+".create")
 				m, err := NewMachine(ctx, cfg, func(m *Machine) {
 					// Rewriting m.cmd partially wouldn't work since Cmd has
 					// some unexported members
@@ -1913,9 +1927,77 @@ func TestLoadSnapshot(t *testing.T) {
 
 				err = m.Start(ctx)
 				require.NoError(t, err)
+
+				err = m.PauseVM(ctx)
+				require.NoError(t, err)
+
+				err = m.CreateSnapshot(ctx, memPath, snapPath)
+				require.NoError(t, err)
+
+				err = m.StopVMM()
+				require.NoError(t, err)
+			},
+
+			loadSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				cfg := createValidConfig(t, socketPath+".load")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
+				require.NoError(t, err)
+
+				err = m.ResumeVM(ctx)
+				require.NoError(t, err)
+
+				err = m.StopVMM()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "TestLoadSnapshot without create",
+			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+
+			},
+
+			loadSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				cfg := createValidConfig(t, socketPath+".load")
+				m, err := NewMachine(ctx, cfg, func(m *Machine) {
+					// Rewriting m.cmd partially wouldn't work since Cmd has
+					// some unexported members
+					args := m.cmd.Args[1:]
+					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
+				}, WithLogger(logrus.NewEntry(machineLogger)))
+				require.NoError(t, err)
+
+				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
+				require.Error(t, err)
+			},
+		},
+		{
+			name: "TestLoadSnapshot and check contents (via ssh)",
+			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				cfg := createValidConfig(t, fmt.Sprintf("%s.create", socketPath),
+					withRootDrive(rootfsPath),
+					withNetworkInterface(networkInterface),
+				)
+
+				cmd := VMCommandBuilder{}.WithSocketPath(fmt.Sprintf("%s.create", socketPath)).WithBin(getFirecrackerBinaryPath()).Build(ctx)
+
+				m, err := NewMachine(ctx, cfg, WithProcessRunner(cmd))
+				require.NoError(t, err)
+
+				err = m.Start(ctx)
+				require.NoError(t, err)
 				defer m.StopVMM()
 
-				client, err := connectToVM(m)
+				time.Sleep(5 * time.Second)
+
+				client, err := connectToVM(m, sshKeyPath)
 				require.NoError(t, err)
 				defer client.Close()
 
@@ -1934,13 +2016,14 @@ func TestLoadSnapshot(t *testing.T) {
 			},
 
 			loadSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
-				cfg := createValidConfig(t, socketPath+".load", withRootDrive(testRootfsWithSSH))
-				m, err := NewMachine(ctx, cfg, func(m *Machine) {
-					// Rewriting m.cmd partially wouldn't work since Cmd has
-					// some unexported members
-					args := m.cmd.Args[1:]
-					m.cmd = exec.Command(getFirecrackerBinaryPath(), args...)
-				}, WithLogger(logrus.NewEntry(machineLogger)))
+				cfg := createValidConfig(t, fmt.Sprintf("%s.load", socketPath),
+					withRootDrive(rootfsPath),
+					withNetworkInterface(networkInterface),
+				)
+
+				cmd := VMCommandBuilder{}.WithSocketPath(fmt.Sprintf("%s.load", socketPath)).WithBin(getFirecrackerBinaryPath()).Build(ctx)
+
+				m, err := NewMachine(ctx, cfg, WithProcessRunner(cmd))
 				require.NoError(t, err)
 
 				err = m.Start(ctx, WithSnapshot(memPath, snapPath))
@@ -1950,7 +2033,9 @@ func TestLoadSnapshot(t *testing.T) {
 				err = m.ResumeVM(ctx)
 				require.NoError(t, err)
 
-				client, err := connectToVM(m)
+				time.Sleep(5 * time.Second)
+
+				client, err := connectToVM(m, sshKeyPath)
 				require.NoError(t, err)
 				defer client.Close()
 
@@ -1985,7 +2070,7 @@ func TestLoadSnapshot(t *testing.T) {
 			machineLogger.Out = io.MultiWriter(os.Stderr, &logBuffer)
 
 			c.createSnapshot(ctx, machineLogger, socketPath, snapPath, memPath)
-			c.loadSnapshot(ctx, machineLogger, socketPath, snapPath, memPath)
+			// c.loadSnapshot(ctx, machineLogger, socketPath, snapPath, memPath)
 		})
 	}
 
