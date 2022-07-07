@@ -1838,7 +1838,7 @@ func connectToVM(m *Machine) (*ssh.Client, error) {
 			ssh.PublicKeys(signer),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         30 * time.Second,
+		Timeout:         5 * time.Second,
 	}
 
 	if len(m.Cfg.NetworkInterfaces) == 0 {
@@ -1850,60 +1850,24 @@ func connectToVM(m *Machine) (*ssh.Client, error) {
 	return ssh.Dial("tcp", fmt.Sprintf("%s:22", ip), config)
 }
 
-func createNetworkInterface(t *testing.T, networkInterface NetworkInterface) error {
-	devName := getTapName()
-	output, err := exec.Command("ip", "tuntap", "add", devName, "mode", "tun").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf(`failed to add tun dev, "ip" command output: %s: %w`, string(output), err)
-	}
-	t.Cleanup(func() {
-		if err := exec.Command("ip", "tuntap", "del", devName, "mode", "run").Run(); err != nil {
-			t.Logf("error on tap cleanup: %v", err)
-		}
-	})
-
-	output, err = exec.Command("ip", "addr", "add", "10.0.0.1/32", "dev", devName).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf(`failed to assign ip to tun dev, "ip" command output: %s: %w`, string(output), err)
-	}
-	t.Cleanup(func() {
-		if err := exec.Command("ip", "addr", "del", "10.0.0.1/32", "dev", devName).Run(); err != nil {
-			t.Logf("error on address cleanup: %v", err)
-		}
-	})
-
-	output, err = exec.Command("ip", "link", "set", "dev", devName, "up").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf(`failed to set tun dev up, "ip" command output: %s: %w`, string(output), err)
-	}
-	t.Cleanup(func() {
-		if err := exec.Command("ip", "link", "del", "dev", devName).Run(); err != nil {
-			t.Logf("error on link cleanup: %v", err)
-		}
-	})
-	return nil
-}
-
-func writeCNIConf(t *testing.T) error {
-	return ioutil.WriteFile("/etc/cni/conf.d/fcnet-test.conflist", []byte(`{
+func writeCNIConf(path, networkName string) error {
+	return ioutil.WriteFile(path, []byte(fmt.Sprintf(`{
 		"cniVersion": "0.3.1",
-		"name": "fcnet-test",
+		"name": "%s",
 		"plugins": [
 		  {
 			"type": "ptp",
 			"ipMasq": true,
-			"mtu": 1500,
 			"ipam": {
 			  "type": "host-local",
 			  "subnet": "192.168.1.0/24"
-			},
-			"dns": {"nameservers": []}
+			}
 		  },
 		  {
 			"type": "tc-redirect-tap"
 		  }
 		]
-	  }`), 0644)
+	  }`, networkName)), 0644)
 }
 
 func TestLoadSnapshot(t *testing.T) {
@@ -1922,16 +1886,17 @@ func TestLoadSnapshot(t *testing.T) {
 		{
 			name: "TestLoadSnapshot and check contents (via ssh)",
 			createSnapshot: func(ctx context.Context, machineLogger *logrus.Logger, socketPath, memPath, snapPath string) {
+				networkName := "fcnet"
 				networkInterface := NetworkInterface{
 					CNIConfiguration: &CNIConfiguration{
-						NetworkName: "fcnet-test",
+						NetworkName: networkName,
 						IfName:      "veth0",
+						ConfDir:     dir,
 					},
 				}
-				err := createNetworkInterface(t, networkInterface)
-				require.NoErrorf(t, err, "Error creating network interface: %w", err)
-				err = writeCNIConf(t)
-				require.NoError(t, err, "Error writing CNI conf: %w", err)
+
+				err = writeCNIConf(fmt.Sprintf("%s/%s.conflist", dir, networkName), networkName)
+				require.NoError(t, err)
 
 				cfg := createValidConfig(t, socketPath+".create",
 					withRootDrive(testRootfsWithSSH),
