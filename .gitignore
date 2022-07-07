@@ -6,4 +6,5 @@ vmlinux
 root-drive.img
 TestPID.img
 build/
+testdata/bin/
 testdata/logs/

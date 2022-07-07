@@ -742,10 +742,6 @@ func (m *Machine) captureFifoToFileWithChannel(ctx context.Context, logger *log.
 }
 
 func (m *Machine) createMachine(ctx context.Context) error {
-	if m.Cfg.hasSnapshot() {
-		return nil
-	}
-
 	resp, err := m.client.PutMachineConfiguration(ctx, &m.Cfg.MachineCfg)
 	if err != nil {
 		m.logger.Errorf("PutMachineConfiguration returned %s", resp.Error())
@@ -762,10 +758,6 @@ func (m *Machine) createMachine(ctx context.Context) error {
 }
 
 func (m *Machine) createBootSource(ctx context.Context, imagePath, initrdPath, kernelArgs string) error {
-	if m.Cfg.hasSnapshot() {
-		return nil
-	}
-
 	bsrc := models.BootSource{
 		KernelImagePath: &imagePath,
 		InitrdPath:      initrdPath,

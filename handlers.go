@@ -281,15 +281,14 @@ func NewCreateBalloonHandler(amountMib int64, deflateOnOom bool, StatsPollingInt
 	}
 }
 
-// NewLoadSnapshotHandler is a named handler that loads a snapshot
+// LoadSnapshotHandler is a named handler that loads a snapshot
 // from the specified filepath
-func NewLoadSnapshotHandler(memFilePath, snapshotPath string, opts ...LoadSnapshotOpt) Handler {
-	return Handler{
-		Name: LoadSnapshotHandlerName,
-		Fn: func(ctx context.Context, m *Machine) error {
-			return m.loadSnapshot(ctx, memFilePath, snapshotPath, opts...)
-		},
-	}
+var LoadSnapshotHandler = Handler{
+	Name: LoadSnapshotHandlerName,
+	Fn: func(ctx context.Context, m *Machine) error {
+		snapshot := m.Cfg.Snapshot
+		return m.loadSnapshot(ctx, snapshot.MemFilePath, snapshot.SnapshotPath, snapshot.Opts...)
+	},
 }
 
 var defaultFcInitHandlerList = HandlerList{}.Append(
@@ -304,6 +303,15 @@ var defaultFcInitHandlerList = HandlerList{}.Append(
 	CreateNetworkInterfacesHandler,
 	AddVsocksHandler,
 	ConfigMmdsHandler,
+)
+
+var loadSnapshotHandlerList = HandlerList{}.Append(
+	SetupNetworkHandler,
+	StartVMMHandler,
+	CreateLogFilesHandler,
+	BootstrapLoggingHandler,
+	LoadSnapshotHandler,
+	AddVsocksHandler,
 )
 
 var defaultValidationHandlerList = HandlerList{}.Append(

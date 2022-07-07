@@ -56,7 +56,6 @@ func WithSnapshot(memFilePath, snapshotPath string, opts ...LoadSnapshotOpt) Sta
 		m.Cfg.Snapshot.SnapshotPath = snapshotPath
 		m.Cfg.Snapshot.Opts = opts
 
-		m.Handlers.FcInit = m.Handlers.FcInit.AppendAfter("fcinit.StartVMM",
-			NewLoadSnapshotHandler(memFilePath, snapshotPath, opts...))
+		m.Handlers.FcInit = loadSnapshotHandlerList
 	}
 }
